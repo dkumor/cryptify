@@ -1,63 +1,59 @@
 # cryptify
-Python script allowing for simple creation/mounting of encrypted containers
 
-## Dependencies
-```bash
-sudo apt-get install python-subprocess32 cryptsetup
-```
+Python script that allows using files as mounted encrypted filesystems, similarly to truecrypt's file containers.
 
-
-
-## What it does
-
-dm-crypt allows using files as mounted encrypted filesystems, similarly to truecrypt's file containers.
-
-Since VPS providers oftentimes don't have the option of encrypting the disk, `cryptify` is a simple shell which
-allows you to easily set up an encrypted folder on your system.
+Since cloud server providers oftentimes don't have the option of encrypting the disk, `cryptify` is a script that lets you use a file to encrypt your data instead.
 
 It requires sudo access.
 
-
 ## How to use it
 
-First, create an ext4 encrypted container which has 10GB space in the file `foldercrypt`
+First, create an encrypted container which has 10GB space in the file `mycontainer.crypt`
 
 ```bash
-./cryptify --size 10000 create
+./cryptify create mycontainer.crypt 10G
 ```
 
-On future reboots, when the container already exists, you can just run:
+You can then mount it at folder `mountpoint` with the following:
+
 ```bash
-./cryptify open
+./cryptify open mycontainer.crypt ./mountpoint
 ```
 
-At this point you have a `foldercrypt.crypt` file, which is mounted at the `foldercrypt` folder.
+At this point you can put whatever files you want inside mountpoint, and they will be written to the encrypted file.
 
-Then, when done with the folder, simply run
+Then, when done:
+
 ```bash
-./cryptify close
+./cryptify close mycontainer.crypt
 ```
 
 to safely unmount.
 
+## Dependencies
+
+Modern ubuntu should have these installed by default, but if on a custom distro, you will need cryptsetup, and `mkfs.ext4`
+
+```bash
+sudo apt-get install cryptsetup
+```
+
 ## All options
 
 ```
-$./cryptify --help
-usage: Sets up and runs LUKS containers [-h] [-i CONTAINER] [-o MOUNTPOINT]
-                                        [-s SIZE] [-u USER]
-                                        command
+usage: Sets up and runs LUKS containers [-h] [-u USER] [--root ROOT]
+                                        {create,open,close} cryptfile
+                                        [mountpoint_or_size]
 
 positional arguments:
-  command               create,open,close
+  {create,open,close}   What to do?
+  cryptfile             the encrypted data file
+  mountpoint_or_size    Mountpoint of container in open, size in create
+                        (ignored in close)
 
 optional arguments:
   -h, --help            show this help message and exit
-  -i CONTAINER, --container CONTAINER
-                        The container to hold encrypted data in
-  -o MOUNTPOINT, --mountpoint MOUNTPOINT
-                        The mountpoint of the container
-  -s SIZE, --size SIZE  The size of the container in megabytes
-  -u USER, --user USER  The user name to mount as
+  -u USER, --user USER  The user name to open as
+  --root ROOT           Can cryptify be run as root?
 
 ```

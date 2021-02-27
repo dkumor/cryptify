@@ -1,4 +1,19 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+"""
+Usage:
+
+# Create a 10GB container
+./cryptify create mycrypt.crypt 10G
+
+# Mount the container at mountpoint
+./cryptify open mycrypt.crypt ./mountpoint
+
+# Close the container
+./cryptify close mycrypt.crypt
+
+"""
+
+
 from subprocess import Popen, call, PIPE
 import base64
 import os
@@ -9,7 +24,9 @@ class CryptoLuks(object):
     def __init__(self, cryptfile, mountdir):
         self.cryptfile = os.path.abspath(cryptfile)
         self.mountdir = mountdir
-        self.fuuid = base64.b64encode(cryptfile.encode("ascii")).decode("ascii")
+        self.fuuid = "cryptify." + base64.b64encode(cryptfile.encode("ascii")).decode(
+            "ascii"
+        )
         self.maploc = os.path.join("/dev/mapper", self.fuuid)
 
     def create(
@@ -52,19 +69,12 @@ class CryptoLuks(object):
         else:
             raise IOError('File "' + self.cryptfile + '" already exists!')
 
-        if not os.path.exists(self.mountdir):
-            os.mkdir(self.mountdir)
-        elif os.listdir(self.mountdir) != []:
-            os.remove(self.cryptfile)
-            raise IOError('Mount directory "' + self.mountdir + '" is not empty!')
-
         # Format the file
         csetup = Popen(["sudo", "cryptsetup", "luksFormat", self.cryptfile], stdin=PIPE)
         csetup.communicate((password + "\n").encode("ascii"))
         csetup.wait()
         if csetup.returncode != 0:
             os.remove(self.cryptfile)
-            os.rmdir(self.mountdir)
             raise IOError("CryptSetup luksFormat failed!")
 
         # Open the volume
@@ -75,31 +85,23 @@ class CryptoLuks(object):
         csetup.wait()
         if csetup.returncode != 0:
             os.remove(self.cryptfile)
-            os.rmdir(self.mountdir)
             raise IOError("CryptSetup luksOpen failed!")
 
         if call(["sudo", "mkfs.ext4", "-j", self.maploc]) != 0:
             call(["sudo", "cryptsetup", "luksClose", self.fuuid])
             os.remove(self.cryptfile)
-            os.rmdir(self.mountdir)
             raise IOError("mkfs.ext4 failed!")
 
-        if call(["sudo", "mount", self.maploc, self.mountdir]) != 0:
-            call(["sudo", "cryptsetup", "luksClose", self.fuuid])
-            os.remove(self.cryptfile)
-            os.rmdir(self.mountdir)
-            raise IOError("mount failed!")
+        call(["sudo", "cryptsetup", "luksClose", self.fuuid])
 
         # Allows the owner to access the directory and file - since we are currently root
         if owner != "root":
-            call(["sudo", "chown", owner + ":" + owner, self.mountdir])
+            # call(["sudo", "chown", owner + ":" + owner, self.mountdir])
             call(["sudo", "chown", owner + ":" + owner, self.cryptfile])
-
-        # For security, only owner can even touch the directory.
-        call(["chmod", "700", self.mountdir])
 
     def open(self, password, owner=None):
         """Opens the LUKS file and mounts it"""
+
         csetup = Popen(
             ["sudo", "cryptsetup", "luksOpen", self.cryptfile, self.fuuid], stdin=PIPE
         )
@@ -116,12 +118,13 @@ class CryptoLuks(object):
         # If we have an owner, make sure that the correct user can access the files, and
         #   that this user is the ONLY user that can access these files
         if owner is not None and owner != "root":
-            call(["sudo", "chown", "-R", owner + ":" + owner, self.mountdir])
-            call(["sudo", "chmod", "-R", "700", self.mountdir])
+            call(["sudo", "chown", owner + ":" + owner, self.mountdir])
 
     def close(self):
         """Unmounts and closes the LUKS file"""
+        print("Closing", self.cryptfile, "mounted at", self.mountdir)
         if call(["sudo", "umount", self.mountdir]) != 0:
+            call(["sync"])
             self.panic()
         else:
             call(["sudo", "cryptsetup", "luksClose", self.fuuid])
@@ -146,14 +149,113 @@ class CryptoLuks(object):
 
 if __name__ == "__main__":
     import sys
-    import os
     import getpass
     import argparse
 
     import argparse
 
+    # https://stackoverflow.com/questions/42865724/python-parse-human-readable-filesizes-into-bytes/42865957
+    import re
+
+    def parse_size(size):
+        units = {"M": 1, "G": 1024, "T": 1024 * 1024}
+        size = size.upper()
+        size = re.sub(r"([MGT]B?)", r" \1", size)
+        v = [string.strip() for string in size.split()]
+        number = float(v[0])
+        if len(v) > 1:
+            number *= units[v[1][0]]
+        return int(number)
+
     parser = argparse.ArgumentParser("Sets up and runs LUKS containers")
-    parser.add_argument("command", help="create,open,close")
+    parser.add_argument(
+        "command", help="What to do?", choices=["create", "open", "close"]
+    )
+    parser.add_argument("cryptfile", help="the encrypted data file")
+    parser.add_argument(
+        "mountpoint_or_size",
+        default="./cryptfolder",
+        nargs="?",
+        help="Mountpoint of container in open, size in create (ignored in close)",
+    )
+    parser.add_argument(
+        "-u",
+        "--user",
+        default=pwd.getpwuid(os.getuid())[0],
+        help="The user name (" + pwd.getpwuid(os.getuid())[0] + ")",
+    )
+    parser.add_argument(
+        "--root",
+        default=False,
+        type=bool,
+        help="Can cryptify be run as root?",
+    )
+
+    args = parser.parse_args()
+    user = args.user
+    if user == "root" and not args.root:
+        print(
+            "Cryptify should not be run as root.\nYou can use --root to override the restriction."
+        )
+        sys.exit(1)
+
+    cryptfile = os.path.abspath(args.cryptfile)
+
+    if args.command == "create":
+        sizestring = args.mountpoint_or_size
+        if sizestring == "./cryptfolder":
+            sizestring = "512M"
+        size = parse_size(sizestring)
+        if size < 10:
+            raise ValueError("Folder size must be > 10MB")
+        c = CryptoLuks(cryptfile, "")
+        print("Creating", cryptfile, "of size", size, "MB as", user)
+        c.create(getpass.getpass("Choose Container Password:"), fsize=size, owner=user)
+    elif args.command == "open":
+        if not (os.path.exists(cryptfile)):
+            print("Could not find", cryptfile)
+            sys.exit(1)
+        mountdir = os.path.abspath(args.mountpoint_or_size)
+        if not (os.path.exists(mountdir)):
+            try:
+                os.mkdir(mountdir)
+            except:
+                raise IOError("Could not find mount directory, did you create it?")
+        c = CryptoLuks(cryptfile, mountdir)
+        print("Opening", cryptfile, "and mounting at", mountdir)
+        c.open(getpass.getpass("Container Password:"), owner=user)
+    elif args.command == "close":
+        if os.path.isdir(cryptfile):
+            mountpoint = cryptfile
+            with open("/proc/mounts", "r") as f:
+                for line in f:
+                    pmap = line.split()
+                    if pmap[1] == mountpoint:
+                        cryptfile = os.path.basename(pmap[0])
+                        break
+            if cryptfile == mountpoint:
+                raise IOError("This directory isn't mounted")
+
+            if not cryptfile.startswith("cryptify."):
+                raise IOError("Mountpoint is not a cryptify endpoint")
+            cryptfile = base64.b64decode(cryptfile[9:].encode("ascii")).decode("ascii")
+            c = CryptoLuks(cryptfile, mountpoint)
+            c.close()
+        else:
+            c = CryptoLuks(cryptfile, "")
+
+            with open("/proc/mounts", "r") as f:
+                for line in f:
+                    pmap = line.split()
+                    if pmap[0] == c.maploc:
+                        c.mountdir = pmap[1]
+                        break
+            if c.mountdir == "":
+                raise IOError("Could not find mountpoint - is the volume open?")
+            c.close()
+
+    """
+    parser.add_argument("")
     parser.add_argument(
         "-i",
         "--container",
@@ -205,3 +307,4 @@ if __name__ == "__main__":
         parser.print_usage()
 
         print("Valid commands: create,open,close")
+    """
